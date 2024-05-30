@@ -85,7 +85,7 @@ if __name__ == '__main__':
         
     print(f"Multi view dataset loaded \tnum items: {len(multiview_dataset)}")
 
-    random_sample = 5
+    random_sample = 10
     if not inference:
         # define source mesh
         ico_mesh = ico_sphere(4, device)
