@@ -34,8 +34,6 @@ from utility.utils import *
 from mv_dataset import MultiViewDataset  # Ensure this path is correct
 
 
-
-
 class SimpleVertexDeformer(nn.Module):
 
     def __init__(self, in_features: int = 3, hidden_dim: int = 256, out_features: int = 3) -> None:
@@ -58,11 +56,36 @@ class SimpleVertexDeformer(nn.Module):
         return output3
 
 
+###############################
+class DeformNet(nn.Module):
+  def __init__(self, verts_dim=3, hidden_dim=256, disp_dim=3, norm_ratio=0.1):
+    super(DeformNet, self).__init__()
+
+    self.l1 = nn.Linear(verts_dim,hidden_dim)
+    self.a1 = nn.ReLU()
+    self.l2 = nn.Linear(hidden_dim,hidden_dim)
+    self.a2 = nn.ReLU()
+    self.l3 = nn.Linear(hidden_dim,disp_dim)
+    self.norm_ratio = norm_ratio
+
+  def forward(self,x):
+    x = self.l1(x)
+    x = self.a1(x)
+    x = self.l2(x)
+    x = self.a2(x)
+    x = self.l3(x) * self.norm_ratio
+
+    return x
+################################
+
+
+
 if __name__ == '__main__':
     
+
     # argv 
-    load_dataset_from_file = True
-    inference = True
+    load_dataset_from_file = False
+    inference = False
 
     # Cuda Setup
     if torch.cuda.is_available():
@@ -74,18 +97,21 @@ if __name__ == '__main__':
     print("device: {}".format(device))
 
 
-    if load_dataset_from_file:
+    if load_dataset_from_file  and os.path.exists(current_dir + "/../dataset/multiview_dataset.pt"):
         multiview_dataset = torch.load(current_dir + "/../dataset/multiview_dataset.pt")
 
     else:    
-        id2paths = dict_path(current_dir + "/../../data/dataset-03797390-20/")
+        # id2paths = dict_path(current_dir + "/../../data/dataset-03797390-20/")
+        id2paths = dict_path(current_dir + "/../../data/dataset_cow/")
         meshes = [load_target_mesh(id2paths[key][0], device=device) for key in id2paths]
         all_data = collect_data(meshes, device=device)
         multiview_dataset = MultiViewDataset(all_data)
         
+    print(f"id2paths:{id2paths} ")
     print(f"Multi view dataset loaded \tnum items: {len(multiview_dataset)}")
 
-    random_sample = 10
+
+    random_sample = 0
     if not inference:
         # define source mesh
         ico_mesh = ico_sphere(4, device)
@@ -101,18 +127,30 @@ if __name__ == '__main__':
         lights = curr_obj_params["lights"]
         camera = curr_obj_params["camera"]
         target_rgb = curr_obj_params["target_rgb"]
+        target_images = curr_obj_params["target_images"]
         target_cameras = curr_obj_params["target_cameras"]
         target_silhouette = curr_obj_params["target_silhouette"]
-        obj_renderer = curr_obj_params["renderer_textured"]
+        silhouette_images = curr_obj_params["silhouette_images"]
+        obj_renderer = curr_obj_params["renderer"]
         num_views = len(target_rgb)
+
+        # visualize multiview data
+        # RGB images
+        # image_grid(target_images.cpu().numpy(), rows=4, cols=5, rgb=True)
+        # plt.show()
+
+        # Visualize silhouette images
+        # image_grid(silhouette_images.cpu().numpy(), rows=4, cols=5, rgb=False)
+        # plt.show()
+        
         
         # model
         mesh_gen = SimpleVertexDeformer(in_features=verts_shape[1], out_features=verts_shape[1]).to(device)
-    
+        experimental_model = DeformNet(verts_dim=3, hidden_dim=256, disp_dim=3, norm_ratio=0.1).to(device)
         # training
         trainer = Trainer(device=device)
-        # optimizer = torch.optim.SGD(mesh_gen.parameters(), lr=0.1, momentum=0.9)
-        optimizer = torch.optim.AdamW(mesh_gen.parameters(), lr=0.1)
+        optimizer = torch.optim.SGD(mesh_gen.parameters(), lr=1.0, momentum=0.9)
+        # optimizer = torch.optim.AdamW(mesh_gen.parameters(), lr=0.1)
         losses = {"rgb": {"weight": 1.0, "values": []},
                 "silhouette": {"weight": 1.0, "values": []},
                 "edge": {"weight": 1.0, "values": []},
@@ -121,13 +159,14 @@ if __name__ == '__main__':
                 }
         
 
-
         new_src_mesh = trainer.train_loop(
             losses=losses,
             src_mesh=ico_mesh,
             optimizer=optimizer,
             num_views=num_views,
-            mesh_gen=mesh_gen,#CHANGE
+            deform_verts=deform_verts,
+            sphere_verts_rgb=sphere_verts_rgb,
+            mesh_gen=None, #experimental_model,#CHANGE
             lights=lights,
             target_rgb=target_rgb,
             target_cameras=target_cameras,
@@ -149,6 +188,9 @@ if __name__ == '__main__':
         test_mesh = test_mesh.offset_verts(deformed_verts_test)
         plot_3d_mesh(test_mesh)
         plot_3d_mesh(multiview_dataset[random_sample][0])
+
+        #test
+        
 
 
     # TODO test inference

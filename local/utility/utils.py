@@ -44,6 +44,7 @@ from pytorch3d.renderer import (
 
 # Utility Functions:
 
+# data path
 def dict_path(data_directory):
     # Map Object Locations
     id2ti = dict()
@@ -60,6 +61,34 @@ def dict_path(data_directory):
     return id2ti
 
 
+# load single object
+def load_target_mesh(obj_location, device='cpu'):
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")  # Turn off default filtering
+        try:
+            mesh = load_objs_as_meshes([obj_location], device=device)
+        except Warning as e:
+            print("Warning eccolo:", e)
+
+    if w:
+        # print('sono finito qua, eh gia')
+        verts_rgb = torch.ones_like(mesh.verts_packed())[None]  # (1, V, 3)
+        mesh.textures = TexturesVertex(verts_features=verts_rgb.to(device))
+
+
+    # We scale normalize and center the target mesh to fit in a sphere of radius 1
+    # centered at (0,0,0). (scale, center) will be used to bring the predicted mesh
+    # to its original center and scale.  Note that normalizing the target mesh,
+    # speeds up the optimization but is not necessary!
+    verts = mesh.verts_packed()
+    N = verts.shape[0]
+    center = verts.mean(0)
+    scale = max((verts - center).abs().max(0)[0])
+    mesh.offset_verts_(-center)
+    mesh.scale_verts_((1.0 / float(scale)))
+    return mesh
+
+# render object from multiple views
 def multiview_rendering(
     mesh,
     num_views=20,
@@ -110,39 +139,40 @@ def multiview_rendering(
     target_rgb = [target_images[i, ..., :3] for i in range(num_views)]
     target_cameras = [FoVPerspectiveCameras(device=device, R=R[None, i, ...], T=T[None, i, ...]) for i in range(num_views)]
 
-    raster_settings_silhouette = RasterizationSettings(
+    raster_settings = RasterizationSettings(
         image_size=128,
         blur_radius=np.log(1. / 1e-4 - 1.)*sigma,
         faces_per_pixel=50,
         bin_size=parameters["bin_size"],  # Optional parameter
         max_faces_per_bin=parameters["max_faces_per_bin"]  # Optional parameter
     )
-    renderer_silhouette = MeshRenderer(
+    renderer = MeshRenderer(
         rasterizer=MeshRasterizer(
             cameras=camera,
-            raster_settings=raster_settings_silhouette
+            raster_settings=raster_settings
         ),
         shader=SoftSilhouetteShader()
     )
 
-    silhouette_images = renderer_silhouette(meshes, cameras=cameras, lights=lights)
+    silhouette_images = renderer(meshes, cameras=cameras, lights=lights)
     target_silhouette = [silhouette_images[i, ..., 3] for i in range(num_views)]
 
-    raster_settings_soft = RasterizationSettings(
-        image_size=128,
-        blur_radius=np.log(1. / 1e-4 - 1.)*sigma,
-        faces_per_pixel=50,
-        perspective_correct=False,
-        bin_size=parameters["bin_size"],  # Optional parameter
-        max_faces_per_bin=parameters["max_faces_per_bin"]  # Optional parameter
-    )
-    renderer_textured = MeshRenderer(
-        rasterizer=MeshRasterizer(
-            cameras=camera,
-            raster_settings=raster_settings_soft
-        ),
-        shader=SoftPhongShader(device=device, cameras=camera, lights=lights)
-    )
+    # useless
+    # raster_settings_soft = RasterizationSettings(
+    #     image_size=128,
+    #     blur_radius=np.log(1. / 1e-4 - 1.)*sigma,
+    #     faces_per_pixel=50,
+    #     perspective_correct=False,
+    #     bin_size=parameters["bin_size"],  # Optional parameter
+    #     max_faces_per_bin=parameters["max_faces_per_bin"]  # Optional parameter
+    # )
+    # renderer_textured = MeshRenderer(
+    #     rasterizer=MeshRasterizer(
+    #         cameras=camera,
+    #         raster_settings=raster_settings_soft
+    #     ),
+    #     shader=SoftPhongShader(device=device, cameras=camera, lights=lights)
+    # )
 
     result["camera"] = camera
     result["lights"] = lights
@@ -151,16 +181,15 @@ def multiview_rendering(
     result["target_rgb"] = target_rgb
     result["silhouette_images"] = silhouette_images
     result["target_silhouette"] = target_silhouette
-    result["renderer_silhouette"] = renderer_silhouette
-    result["renderer_textured"] = renderer_textured
+    result["renderer"] = renderer
+
+    #useless
+    # result["renderer_textured"] = renderer_textured
 
     return result
 
 
-
-
-
-
+# define a global renderer form a general pov
 def setup_renderer(device):
 
     raster_settings_soft = RasterizationSettings(
@@ -186,7 +215,7 @@ def setup_renderer(device):
     return renderer
 
 
-#tmp functions
+# tmp functions
 def visualize_prediction_simple(
         predicted_mesh,
         renderer,
@@ -222,8 +251,7 @@ def collect_data(meshes, device):
             "target_rgb" : results["target_rgb"],
             "silhouette_images" : results["silhouette_images"],
             "target_silhouette" : results["target_silhouette"],
-            "renderer_silhouette" : results["renderer_silhouette"],
-            "renderer_textured" : results["renderer_textured"]
+            "renderer" : results["renderer"]
         }
 
         all_data.append(tmp_dict)
@@ -237,35 +265,6 @@ def visualize_collect_data(images):
         plt.title(f"View {i}")
         plt.axis('off')
         plt.show()
-
-
-# Load Object
-def load_target_mesh(obj_location, device='cpu'):
-    with warnings.catch_warnings(record=True) as w:
-        warnings.simplefilter("always")  # Turn off default filtering
-        try:
-            mesh = load_objs_as_meshes([obj_location], device=device)
-        except Warning as e:
-            print("Warning eccolo:", e)
-
-    if w:
-        # print('sono finito qua, eh gia')
-        verts_rgb = torch.ones_like(mesh.verts_packed())[None]  # (1, V, 3)
-        mesh.textures = TexturesVertex(verts_features=verts_rgb.to(device))
-
-
-    # We scale normalize and center the target mesh to fit in a sphere of radius 1
-    # centered at (0,0,0). (scale, center) will be used to bring the predicted mesh
-    # to its original center and scale.  Note that normalizing the target mesh,
-    # speeds up the optimization but is not necessary!
-    verts = mesh.verts_packed()
-    N = verts.shape[0]
-    center = verts.mean(0)
-    scale = max((verts - center).abs().max(0)[0])
-    mesh.offset_verts_(-center)
-    mesh.scale_verts_((1.0 / float(scale)))
-    return mesh
-
 
 def plot_3d_mesh(mesh):
     # Render the plotly figure
@@ -340,7 +339,7 @@ class Trainer():
         num_iter: int = 1000,
         plot_period: int = 250,
         rgb_mode: bool = True,
-        num_views_per_iteration: int = 5,
+        num_views_per_iteration: int = 2,
     ) -> pytorch3d.structures.meshes.Meshes:
 
         new_src_mesh = src_mesh
@@ -357,12 +356,14 @@ class Trainer():
             if mesh_gen:
                 # print(f"input shape: {new_src_mesh.verts_packed().shape}") # debug
                 model_input = src_mesh.verts_packed().to(self.device)
-                deform_verts = mesh_gen(model_input)
+                print(f"deform vers shape before modelling: {model_input.shape}")
+                model_deform_verts = mesh_gen(model_input)
+                print(f"deform vers shape after modelling: {model_deform_verts.shape}")
                 new_src_mesh = src_mesh.offset_verts(deform_verts) 
 
             # deform the vertex matrix directly 
             else:
-                new_src_mesh = mesh_gen
+                # new_src_mesh = mesh_gen
                 new_src_mesh = src_mesh.offset_verts(deform_verts)
 
             if rgb_mode:
@@ -398,9 +399,6 @@ class Trainer():
             # loss["silhouette"] += total_silhouette_loss
             # if rgb_mode:
             #     loss["rgb"] += total_rgb_loss        
-
-
-
 
             # Weighted sum of the losses
             sum_loss = torch.tensor(0.0, device=self.device)
@@ -450,7 +448,6 @@ class Trainer():
          
         return new_src_mesh
     
-
 
 
     # Plot losses as a function of optimization iteration
